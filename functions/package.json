@@ -1,0 +1,14 @@
+{
+  "name": "odontogov-functions",
+  "version": "1.0.0",
+  "description": "Firebase Cloud Functions para Sistema Odontológico Municipal com Gemini e FCM",
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.3.2"
+  }
+}

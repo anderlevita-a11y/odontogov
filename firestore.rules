@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // Funções Auxiliares de Autenticação e RBAC
+    // ==========================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserData().cargo == 'Admin';
+    }
+
+    function isTecnico() {
+      return isAuthenticated() && getUserData().cargo == 'Técnico';
+    }
+
+    function isDentistaOuASB() {
+      return isAuthenticated() && (getUserData().cargo == 'Dentista' || getUserData().cargo == 'ASB');
+    }
+
+    // ==========================================
+    // 1. Coleção: users
+    // ==========================================
+    match /users/{userId} {
+      // Admins têm acesso total.
+      // Usuários autenticados podem ler seu próprio perfil e dados básicos dos colegas (para solicitar trocas).
+      allow read: if isAuthenticated();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['cargo', 'UBS_id']));
+    }
+
+    // ==========================================
+    // 2. Coleção: tickets_manutencao
+    // Requisito: Técnicos veem chamados de manutenção. Dentistas abrem e veem da sua UBS. Admins veem tudo.
+    // ==========================================
+    match /tickets_manutencao/{ticketId} {
+      // Leitura: Admin ou Técnico veem todos os chamados municipais.
+      // Dentista vê os chamados abertos por ele ou pertencentes à sua UBS.
+      allow read: if isAdmin() || isTecnico() || (
+        isDentistaOuASB() && (
+          resource.data.criadoPor == request.auth.uid ||
+          resource.data.ubsId == getUserData().UBS_id
+        )
+      );
+
+      // Criação: Dentistas/ASBs e Admins podem abrir chamados.
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDentistaOuASB() && request.resource.data.criadoPor == request.auth.uid)
+      );
+
+      // Atualização:
+      // - Admins têm controle total.
+      // - Técnicos podem alterar status (aberto -> em_atendimento -> concluido) e atribuir a si mesmos.
+      allow update: if isAdmin() || (
+        isTecnico() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'atribuidoA', 'relatorioTecnico', 'atualizadoEm'])
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ==========================================
+    // 3. Coleção: schedules (Escalas de Trabalho)
+    // Requisito: Dentistas veem apenas suas escalas. Admins veem tudo.
+    // ==========================================
+    match /schedules/{scheduleId} {
+      // Leitura:
+      // - Admins veem todas as escalas da rede.
+      // - Dentistas veem apenas suas próprias escalas (ou escalas da mesma UBS para ofertar trocas).
+      // - Técnicos não têm permissão de ver escalas de profissionais.
+      allow read: if isAdmin() || (
+        isDentistaOuASB() && (
+          resource.data.userId == request.auth.uid ||
+          resource.data.ubsId == getUserData().UBS_id
+        )
+      );
+
+      // Escalas só são criadas, alteradas e deletadas pela Coordenação (Admin)
+      // ou atualizadas por Cloud Function administrativa no momento de aprovação de troca.
+      allow write: if isAdmin();
+    }
+
+    // ==========================================
+    // 4. Coleção: trocas_escala
+    // Requisito: Dentistas veem apenas suas trocas. Admins veem tudo.
+    // ==========================================
+    match /trocas_escala/{tradeId} {
+      // Leitura:
+      // - Admin vê todas as solicitações de troca para aprovação.
+      // - Dentista vê apenas solicitações onde ele é o solicitante ou o substituto indicado.
+      // - Técnicos não acessam trocas de escala.
+      allow read: if isAdmin() || (
+        isDentistaOuASB() && (
+          resource.data.solicitanteId == request.auth.uid ||
+          resource.data.substitutoId == request.auth.uid
+        )
+      );
+
+      // Criação de solicitação:
+      // - Dentista pode solicitar troca em sua própria escala pendente.
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDentistaOuASB() && request.resource.data.solicitanteId == request.auth.uid && request.resource.data.status == 'aguardando_aprovacao_admin')
+      );
+
+      // Atualização:
+      // - Apenas Administradores podem alterar o status (aprovar ou recusar a troca).
+      allow update: if isAdmin();
+
+      allow delete: if isAdmin();
+    }
+  }
+}
